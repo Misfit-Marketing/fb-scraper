@@ -63,7 +63,14 @@ def _write_output(all_ads: list[dict], output: str) -> None:
             json.dump(all_ads, f, ensure_ascii=False, indent=4)
 
 
-def run(target: str, limit: int | None, headless: bool, save_db: bool, output: str | None) -> list[dict]:
+def run(
+    target: str,
+    limit: int | None,
+    headless: bool,
+    save_db: bool,
+    output: str | None,
+    upload_s3: bool = True,
+) -> list[dict]:
     targets = _resolve_targets(target)
     all_ads: list[dict] = []
 
@@ -72,6 +79,11 @@ def run(target: str, limit: int | None, headless: bool, save_db: bool, output: s
             print(f"Scraping '{site_name}': {url}")
             ads = scrape_ads_library(url, data_limit=limit, headless=headless)
             print(f"  collected {len(ads)} ads")
+
+            if upload_s3:
+                from app.storage.s3_uploader import attach_s3_media_urls
+                attach_s3_media_urls(ads)
+
             all_ads.extend(ads)
 
             if save_db:
@@ -110,6 +122,11 @@ def main(argv=None) -> None:
     )
     parser.add_argument("--no-save-db", action="store_true", help="Skip saving results to the database.")
     parser.add_argument(
+        "--no-s3-upload",
+        action="store_true",
+        help="Skip uploading scraped media (image/video) to S3.",
+    )
+    parser.add_argument(
         "--output",
         default="app/test/scraped_data.json",
         help="Path to write the scraped JSON output.",
@@ -122,6 +139,7 @@ def main(argv=None) -> None:
         headless=args.headless,
         save_db=not args.no_save_db,
         output=args.output,
+        upload_s3=not args.no_s3_upload,
     )
 
 

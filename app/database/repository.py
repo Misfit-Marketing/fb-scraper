@@ -34,8 +34,8 @@ INSERT INTO ads (
     ad_archive_id, advertiser_id, page_id, page_name, ad_snapshot_url,
     is_active, delivery_start_time, publisher_platforms,
     poster_name, poster_url, posted_with, body_text, media_url,
-    shop_now_url, headline, multiple_versions, raw
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    s3_media_url, shop_now_url, headline, multiple_versions, raw
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (ad_archive_id) DO UPDATE SET
     advertiser_id = EXCLUDED.advertiser_id,
     page_id = EXCLUDED.page_id,
@@ -49,6 +49,7 @@ ON CONFLICT (ad_archive_id) DO UPDATE SET
     posted_with = EXCLUDED.posted_with,
     body_text = EXCLUDED.body_text,
     media_url = EXCLUDED.media_url,
+    s3_media_url = COALESCE(EXCLUDED.s3_media_url, ads.s3_media_url),
     shop_now_url = EXCLUDED.shop_now_url,
     headline = EXCLUDED.headline,
     multiple_versions = EXCLUDED.multiple_versions,
@@ -133,6 +134,7 @@ def save_ads(site_name: str, source_url: str, ads: list[dict]) -> int:
                     ad.get("posted_with"),
                     ad.get("body_text"),
                     ad.get("media_url"),
+                    ad.get("s3_media_url"),
                     ad.get("shop_now_url"),
                     ad.get("headline"),
                     ad.get("multiple_versions"),
