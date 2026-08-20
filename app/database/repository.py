@@ -32,8 +32,10 @@ RETURNING id;
 UPSERT_AD_SQL = """
 INSERT INTO ads (
     ad_archive_id, advertiser_id, page_id, page_name, ad_snapshot_url,
-    is_active, delivery_start_time, publisher_platforms, raw
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    is_active, delivery_start_time, publisher_platforms,
+    poster_name, poster_url, posted_with, body_text, media_url,
+    shop_now_url, headline, multiple_versions, raw
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (ad_archive_id) DO UPDATE SET
     advertiser_id = EXCLUDED.advertiser_id,
     page_id = EXCLUDED.page_id,
@@ -42,6 +44,14 @@ ON CONFLICT (ad_archive_id) DO UPDATE SET
     is_active = EXCLUDED.is_active,
     delivery_start_time = EXCLUDED.delivery_start_time,
     publisher_platforms = EXCLUDED.publisher_platforms,
+    poster_name = EXCLUDED.poster_name,
+    poster_url = EXCLUDED.poster_url,
+    posted_with = EXCLUDED.posted_with,
+    body_text = EXCLUDED.body_text,
+    media_url = EXCLUDED.media_url,
+    shop_now_url = EXCLUDED.shop_now_url,
+    headline = EXCLUDED.headline,
+    multiple_versions = EXCLUDED.multiple_versions,
     raw = EXCLUDED.raw,
     last_scraped_at = now();
 """
@@ -118,6 +128,14 @@ def save_ads(site_name: str, source_url: str, ads: list[dict]) -> int:
                     _is_active(ad.get("status")),
                     _parse_started_running(ad.get("started_running")),
                     ad.get("platforms") or [],
+                    ad.get("poster_name"),
+                    ad.get("poster_url"),
+                    ad.get("posted_with"),
+                    ad.get("body_text"),
+                    ad.get("media_url"),
+                    ad.get("shop_now_url"),
+                    ad.get("headline"),
+                    ad.get("multiple_versions"),
                     json.dumps(ad),
                 ))
                 saved += 1
