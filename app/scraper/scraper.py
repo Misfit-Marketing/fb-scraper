@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
@@ -267,15 +269,22 @@ def scrape_ads_library(url: str, data_limit: int | None = 10, headless: bool = F
                 collected_data.append(ad_data)
                 time.sleep(2)
 
-            try:
-                close = driver.find_element(
-                    "xpath",
-                    '//*[@id="facebook"]/body/div[6]/div[1]/div[1]/div/div/div/div/div[1]/div[2]/span/div/span/div/div[2]/div/div'
-                )
-            except NoSuchElementException:
-                close = None
+            # Close the ad-details modal. Facebook's DOM shifts often, so match the
+            # close button by its accessible label instead of an absolute path,
+            # and fall back to pressing Escape if it can't be found.
+            closes = driver.find_elements(
+                "xpath",
+                '//div[@role="dialog"]//div[@aria-label="Close" or @aria-label="close"]'
+                ' | //div[@aria-label="Close" and @role="button"]'
+            )
+            if closes:
+                driver.execute_script("arguments[0].click();", closes[-1])
+            else:
+                ActionChains(driver).send_keys(Keys.ESCAPE).perform()
 
-            driver.execute_script("arguments[0].click();", close)
+            time.sleep(1)
+            if driver.find_elements("xpath", '//div[@role="dialog"]'):
+                ActionChains(driver).send_keys(Keys.ESCAPE).perform()
 
             print(f"Done scraping ad page {i+1}")
             time.sleep(2)
