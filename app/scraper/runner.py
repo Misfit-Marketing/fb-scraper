@@ -17,7 +17,7 @@ import os
 
 from dotenv import load_dotenv
 
-from app.scraper.scraper import scrape_ads_library
+from app.scraper.scraper import login_to_facebook, scrape_ads_library
 from app.scraper.websites import WEBSITES
 
 
@@ -70,6 +70,7 @@ def run(
     save_db: bool,
     output: str | None,
     upload_s3: bool = True,
+    profile_dir: str | None = None,
 ) -> list[dict]:
     targets = _resolve_targets(target)
     all_ads: list[dict] = []
@@ -77,7 +78,7 @@ def run(
     for site_name, urls in targets.items():
         for url in urls:
             print(f"Scraping '{site_name}': {url}")
-            ads = scrape_ads_library(url, data_limit=limit, headless=headless)
+            ads = scrape_ads_library(url, data_limit=limit, headless=headless, profile_dir=profile_dir)
             print(f"  collected {len(ads)} ads")
 
             if upload_s3:
@@ -127,11 +128,30 @@ def main(argv=None) -> None:
         help="Skip uploading scraped media (image/video) to S3.",
     )
     parser.add_argument(
+        "--profile",
+        default=None,
+        help=(
+            "Chrome profile folder holding a Facebook login, e.g. .chrome-profile. "
+            "Needed for age-restricted ads (e.g. him). Create it with --login first."
+        ),
+    )
+    parser.add_argument(
+        "--login",
+        action="store_true",
+        help="Open Chrome on --profile so you can log into Facebook by hand, then exit.",
+    )
+    parser.add_argument(
         "--output",
         default="app/test/scraped_data.json",
         help="Path to write the scraped JSON output.",
     )
     args = parser.parse_args(argv)
+
+    if args.login:
+        if not args.profile:
+            parser.error("--login needs --profile, e.g. --profile .chrome-profile")
+        login_to_facebook(args.profile)
+        return
 
     run(
         target=args.target,
@@ -140,6 +160,7 @@ def main(argv=None) -> None:
         save_db=not args.no_save_db,
         output=args.output,
         upload_s3=not args.no_s3_upload,
+        profile_dir=args.profile,
     )
 
 

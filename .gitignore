@@ -11,3 +11,4 @@ app/test/*.json
 app/test
 
 .claude
+.chrome-profile/

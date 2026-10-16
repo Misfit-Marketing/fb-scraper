@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import time
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -10,7 +12,80 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
 
 
-def scrape_ads_library(url: str, data_limit: int | None = 10, headless: bool = False) -> list[dict]:
+def _build_driver(headless: bool, profile_dir: str | None = None) -> webdriver.Chrome:
+    chrome_options = Options()
+    if headless:
+        chrome_options.add_argument('--headless=new')
+    else:
+        chrome_options.add_argument('--start-maximized')
+
+    # Reuse a dedicated Chrome profile so a Facebook login (needed for
+    # age-gated ads) persists between runs.
+    if profile_dir:
+        chrome_options.add_argument(f'--user-data-dir={os.path.abspath(profile_dir)}')
+
+    return webdriver.Chrome(options=chrome_options)
+
+
+_SAME_SITE = {"lax": "Lax", "strict": "Strict", "no_restriction": "None", "none": "None"}
+
+
+def _parse_fb_cookies(raw: str) -> list[dict]:
+    """Accept either a Cookie-Editor JSON export (list of cookie objects) or a
+    plain "name=value; name2=value2" header string."""
+    raw = raw.strip()
+    if raw.startswith("["):
+        cookies = []
+        for c in json.loads(raw):
+            cookie = {
+                "name": c["name"],
+                "value": c["value"],
+                "domain": c.get("domain", ".facebook.com"),
+                "path": c.get("path", "/"),
+                "secure": c.get("secure", True),
+                "httpOnly": c.get("httpOnly", False),
+            }
+            same_site = _SAME_SITE.get(str(c.get("sameSite", "")).lower())
+            if same_site:
+                cookie["sameSite"] = same_site
+            cookies.append(cookie)
+        return cookies
+
+    cookies = []
+    for part in raw.split(";"):
+        if "=" in part:
+            name, value = part.strip().split("=", 1)
+            cookies.append({"name": name, "value": value, "domain": ".facebook.com", "path": "/", "secure": True})
+    return cookies
+
+
+def _load_fb_cookies(driver: webdriver.Chrome, raw: str) -> None:
+    """Log the browser into Facebook by injecting session cookies. Cookies can
+    only be set for the domain currently loaded, so visit facebook.com first."""
+    driver.get("https://www.facebook.com/")
+    cookies = _parse_fb_cookies(raw)
+    for cookie in cookies:
+        driver.add_cookie(cookie)
+    print(f"[debug] loaded {len(cookies)} Facebook cookies")
+
+
+def login_to_facebook(profile_dir: str) -> None:
+    """Open a visible Chrome on the given profile so the user can log into
+    Facebook by hand; the session is saved in profile_dir for later runs."""
+    driver = _build_driver(headless=False, profile_dir=profile_dir)
+    try:
+        driver.get("https://www.facebook.com/login")
+        input("Log into Facebook in the opened Chrome window, then press Enter here to save and close...")
+    finally:
+        driver.quit()
+
+
+def scrape_ads_library(
+    url: str,
+    data_limit: int | None = 10,
+    headless: bool = False,
+    profile_dir: str | None = None,
+) -> list[dict]:
     """
     Scrape a Facebook Ads Library search results page.
 
@@ -18,19 +93,20 @@ def scrape_ads_library(url: str, data_limit: int | None = 10, headless: bool = F
     data_limit: set to an integer to stop after that many ads, or None to
         scrape everything the page reports.
     headless: run Chrome headless (needed in CI where there is no display).
+    profile_dir: optional Chrome profile folder holding a Facebook login
+        (see login_to_facebook); needed to see age-restricted ads.
+
+    If the FB_COOKIES environment variable is set, those Facebook session
+    cookies are loaded first so age-restricted ads are visible.
     """
 
-    # Set Chrome options for headless mode
-    chrome_options = Options()
-    if headless:
-        chrome_options.add_argument('--headless=new')
-    else:
-        chrome_options.add_argument('--start-maximized')
-
-    # Initialize the webdriver with the specified options
-    driver = webdriver.Chrome(options=chrome_options)
+    driver = _build_driver(headless, profile_dir)
 
     try:
+        fb_cookies = os.getenv("FB_COOKIES")
+        if fb_cookies:
+            _load_fb_cookies(driver, fb_cookies)
+
         # Navigate to the website
         driver.get(url)
 
@@ -57,6 +133,32 @@ def scrape_ads_library(url: str, data_limit: int | None = 10, headless: bool = F
         )
 
         print(f"[debug] reported total_results: {total_results}")
+
+        # Age-restricted advertisers (e.g. him) hide each ad's media behind a
+        # "confirm your age by logging in" box unless the browser is logged in.
+        # Facebook occasionally serves the gated version for a moment even with
+        # a valid login, so reload once before treating the cookies as expired.
+        def _age_gated() -> bool:
+            return any(
+                el.is_displayed()
+                for el in driver.find_elements("xpath", '//*[contains(text(),"confirm your age")]')
+            )
+
+        time.sleep(2)
+        if _age_gated() and fb_cookies:
+            print("[warn] ads look age-gated; reloading once to let the login apply")
+            driver.refresh()
+            WebDriverWait(driver, 20).until(EC.presence_of_element_located(results_locator))
+            time.sleep(5)
+
+        if _age_gated():
+            if fb_cookies:
+                raise RuntimeError(
+                    "Ads are still age-gated even though FB_COOKIES was set: the "
+                    "Facebook cookies have probably expired or been logged out. "
+                    "Export fresh cookies and update the FB_COOKIES secret."
+                )
+            print("[warn] ads are age-gated; media/text will be empty. Set FB_COOKIES to log in.")
 
         # Scroll only when needed
         stall_count = 0
@@ -124,7 +226,27 @@ def scrape_ads_library(url: str, data_limit: int | None = 10, headless: bool = F
 
         for i in range(compare_result):      # <-- Number of ads to capture
 
-            first_layer = driver.find_element("xpath", f'(//div[@class="xdj266r x11t971q xat24cr xvc5jky x1dr75xp xh8yej3 xkopdvs"]//div[@class="xh8yej3"])[{i+1}]')
+            viewmores = driver.find_elements(
+                "xpath",
+                '//div[text()="See summary details" or text()="See ad details"]'
+            )
+
+            if i >= len(viewmores):
+                break
+
+            # Scope every field to the card that owns this ad's "See ad details"
+            # button: the outermost ancestor that still contains only one such
+            # button. That keeps media/headline/body tied to the same ad as the
+            # details (library id, dates) instead of relying on two separate
+            # positional indexes lining up.
+            cards = viewmores[i].find_elements(
+                "xpath",
+                './ancestor::div[count(.//div[text()="See summary details" or text()="See ad details"])=1][last()]'
+            )
+            if cards:
+                first_layer = cards[0]
+            else:
+                first_layer = driver.find_element("xpath", f'(//div[@class="xdj266r x11t971q xat24cr xvc5jky x1dr75xp xh8yej3 xkopdvs"]//div[@class="xh8yej3"])[{i+1}]')
 
             try:
                 poster_name = first_layer.find_element("xpath", './/a[contains(@href,"facebook.com")]').text
@@ -163,14 +285,6 @@ def scrape_ads_library(url: str, data_limit: int | None = 10, headless: bool = F
                 headline = first_layer.find_element("xpath", './/div[@class="x6ikm8r x10wlt62 xlyipyv x1mcwxda x190qgfh"]').text
             except NoSuchElementException:
                 headline = None
-
-            viewmores = driver.find_elements(
-                "xpath",
-                '//div[text()="See summary details" or text()="See ad details"]'
-            )
-
-            if i >= len(viewmores):
-                break
 
             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", viewmores[i])
             driver.execute_script("arguments[0].click();", viewmores[i])
