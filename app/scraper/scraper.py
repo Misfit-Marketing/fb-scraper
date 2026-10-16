@@ -202,7 +202,8 @@ def scrape_ads_library(url: str, data_limit: int | None = 10, headless: bool = F
                     "library_id": None,
                     "started_running": None,
                     "platforms": [],
-                    "multiple_versions": False
+                    "multiple_versions": False,
+                    "ad_snapshot_url": None
                 }
                 collected_data.append(ad_data)
 
@@ -222,7 +223,8 @@ def scrape_ads_library(url: str, data_limit: int | None = 10, headless: bool = F
                     "library_id": None,
                     "started_running": None,
                     "platforms": [],
-                    "multiple_versions": False
+                    "multiple_versions": False,
+                    "ad_snapshot_url": None
                 }
 
                 for line in lines:
@@ -265,6 +267,9 @@ def scrape_ads_library(url: str, data_limit: int | None = 10, headless: bool = F
 
                     elif "multiple versions" in line.lower():
                         ad_data["multiple_versions"] = True
+
+                if ad_data["library_id"]:
+                    ad_data["ad_snapshot_url"] = f"https://www.facebook.com/ads/library/?id={ad_data['library_id']}"
 
                 collected_data.append(ad_data)
                 time.sleep(2)
