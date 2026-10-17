@@ -33,7 +33,13 @@ _SAME_SITE = {"lax": "Lax", "strict": "Strict", "no_restriction": "None", "none"
 def _parse_fb_cookies(raw: str) -> list[dict]:
     """Accept either a Cookie-Editor JSON export (list of cookie objects) or a
     plain "name=value; name2=value2" header string."""
-    raw = raw.strip()
+    raw = raw.strip().lstrip("\ufeff")
+    # Tolerate a value copied straight from .env: FB_COOKIES='[...]'
+    if raw.startswith("FB_COOKIES="):
+        raw = raw[len("FB_COOKIES="):].strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+        raw = raw[1:-1].strip()
+
     if raw.startswith("["):
         cookies = []
         for c in json.loads(raw):
@@ -64,6 +70,13 @@ def _load_fb_cookies(driver: webdriver.Chrome, raw: str) -> None:
     only be set for the domain currently loaded, so visit facebook.com first."""
     driver.get("https://www.facebook.com/")
     cookies = _parse_fb_cookies(raw)
+    names = {c["name"] for c in cookies}
+    if not {"c_user", "xs"} <= names:
+        raise RuntimeError(
+            f"FB_COOKIES is set but has no usable login (parsed {len(cookies)} cookies; "
+            "need c_user and xs). Paste the Cookie-Editor JSON export as-is, starting "
+            "with [ and ending with ] - no FB_COOKIES= and no surrounding quotes."
+        )
     for cookie in cookies:
         driver.add_cookie(cookie)
     print(f"[debug] loaded {len(cookies)} Facebook cookies")
@@ -100,32 +113,63 @@ def scrape_ads_library(
     cookies are loaded first so age-restricted ads are visible.
     """
 
-    driver = _build_driver(headless, profile_dir)
+    fb_cookies = os.getenv("FB_COOKIES")
 
-    try:
-        fb_cookies = os.getenv("FB_COOKIES")
+    results_locator = (
+        "xpath",
+        './/div[@class="x8t9es0 x1uxerd5 xrohxju x108nfp6 xq9mrsl x1h4wwuj x117nqv4 xeuugli"]'
+    )
+
+    def _age_gated(driver) -> bool:
+        return any(
+            el.is_displayed()
+            for el in driver.find_elements("xpath", '//*[contains(text(),"confirm your age")]')
+        )
+
+    # Age-restricted advertisers (e.g. him) hide each ad's media behind a
+    # "confirm your age by logging in" box unless the browser is logged in.
+    # Even with valid cookies, Facebook randomly decides per browser session
+    # whether to serve the gated version, and that choice sticks for the whole
+    # session (reloading doesn't help). So when gated, start a fresh browser.
+    max_attempts = 5 if fb_cookies else 1
+
+    for attempt in range(1, max_attempts + 1):
+        driver = _build_driver(headless, profile_dir)
+
         if fb_cookies:
             _load_fb_cookies(driver, fb_cookies)
 
         # Navigate to the website
         driver.get(url)
 
-        results_locator = (
-            "xpath",
-            './/div[@class="x8t9es0 x1uxerd5 xrohxju x108nfp6 xq9mrsl x1h4wwuj x117nqv4 xeuugli"]'
-        )
-
         try:
             results = WebDriverWait(driver, 20).until(
                 EC.presence_of_element_located(results_locator)
             ).text
         except TimeoutException:
+            title = driver.title
+            driver.quit()
             raise RuntimeError(
                 "Timed out waiting for the ads library results count to appear. "
                 "Facebook may be showing a login/consent wall instead of the ads "
-                f"library page (page title: {driver.title!r})."
+                f"library page (page title: {title!r})."
             )
 
+        time.sleep(3)
+        if not (fb_cookies and _age_gated(driver)):
+            break
+
+        driver.quit()
+        if attempt == max_attempts:
+            raise RuntimeError(
+                f"Ads were still age-gated in {max_attempts} fresh browser sessions even "
+                "though FB_COOKIES was set. The Facebook cookies have probably expired "
+                "or been logged out: export fresh cookies and update FB_COOKIES."
+            )
+        print(f"[warn] ads are age-gated in this browser session (attempt {attempt}/{max_attempts}); starting a fresh one")
+        time.sleep(5)
+
+    try:
         total_results = int(
             results.replace('~', '')
                    .replace(',', '')
@@ -134,30 +178,7 @@ def scrape_ads_library(
 
         print(f"[debug] reported total_results: {total_results}")
 
-        # Age-restricted advertisers (e.g. him) hide each ad's media behind a
-        # "confirm your age by logging in" box unless the browser is logged in.
-        # Facebook occasionally serves the gated version for a moment even with
-        # a valid login, so reload once before treating the cookies as expired.
-        def _age_gated() -> bool:
-            return any(
-                el.is_displayed()
-                for el in driver.find_elements("xpath", '//*[contains(text(),"confirm your age")]')
-            )
-
-        time.sleep(2)
-        if _age_gated() and fb_cookies:
-            print("[warn] ads look age-gated; reloading once to let the login apply")
-            driver.refresh()
-            WebDriverWait(driver, 20).until(EC.presence_of_element_located(results_locator))
-            time.sleep(5)
-
-        if _age_gated():
-            if fb_cookies:
-                raise RuntimeError(
-                    "Ads are still age-gated even though FB_COOKIES was set: the "
-                    "Facebook cookies have probably expired or been logged out. "
-                    "Export fresh cookies and update the FB_COOKIES secret."
-                )
+        if _age_gated(driver):
             print("[warn] ads are age-gated; media/text will be empty. Set FB_COOKIES to log in.")
 
         # Scroll only when needed
