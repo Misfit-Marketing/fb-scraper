@@ -131,7 +131,9 @@ def scrape_ads_library(
     # Even with valid cookies, Facebook randomly decides per browser session
     # whether to serve the gated version, and that choice sticks for the whole
     # session (reloading doesn't help). So when gated, start a fresh browser.
-    max_attempts = 5 if fb_cookies else 1
+    # Also retry when the page never shows its results count: Facebook now and
+    # then serves CI machines a slow/incomplete page that a fresh session fixes.
+    max_attempts = 5 if fb_cookies else 3
 
     for attempt in range(1, max_attempts + 1):
         driver = _build_driver(headless, profile_dir)
@@ -149,11 +151,15 @@ def scrape_ads_library(
         except TimeoutException:
             title = driver.title
             driver.quit()
-            raise RuntimeError(
-                "Timed out waiting for the ads library results count to appear. "
-                "Facebook may be showing a login/consent wall instead of the ads "
-                f"library page (page title: {title!r})."
-            )
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f"Timed out waiting for the ads library results count to appear in {max_attempts} "
+                    "browser sessions. Facebook may be showing a login/consent wall instead of the "
+                    f"ads library page (page title: {title!r})."
+                )
+            print(f"[warn] results count didn't load (attempt {attempt}/{max_attempts}); starting a fresh browser")
+            time.sleep(10)
+            continue
 
         time.sleep(3)
         if not (fb_cookies and _age_gated(driver)):
