@@ -18,7 +18,7 @@ import os
 from dotenv import load_dotenv
 
 from app.scraper.scraper import login_to_facebook, scrape_ads_library
-from app.scraper.websites import WEBSITES
+from app.scraper.websites import POSTER_FILTERS, WEBSITES
 
 
 def _parse_limit(value: str) -> int | None:
@@ -80,6 +80,11 @@ def run(
             print(f"Scraping '{site_name}': {url}")
             ads = scrape_ads_library(url, data_limit=limit, headless=headless, profile_dir=profile_dir)
             print(f"  collected {len(ads)} ads")
+
+            poster_filter = POSTER_FILTERS.get(site_name)
+            if poster_filter:
+                ads = [ad for ad in ads if poster_filter in (ad.get("poster_url") or "")]
+                print(f"  kept {len(ads)} ads posted by {poster_filter}")
 
             if upload_s3:
                 from app.storage.s3_uploader import attach_s3_media_urls
