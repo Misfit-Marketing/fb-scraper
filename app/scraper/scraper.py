@@ -93,6 +93,28 @@ def login_to_facebook(profile_dir: str) -> None:
         driver.quit()
 
 
+# Each platform icon is an inline SVG; match it by the start of its path data.
+PLATFORM_SVG_SIGNATURES = {
+    "M12 6.022C12 2.696": "Facebook",
+    "M6 3.227a2.773": "Instagram",
+    "M6 0c3.17 0 5.74": "WhatsApp",
+    "M6 0C2.706 0 0 2.585": "Messenger",
+    "M6.006.06c1.72": "Threads",
+}
+
+
+def get_platforms(data_to_get) -> list[str]:
+    platforms: list[str] = []
+    for path in data_to_get.find_elements("xpath", './/*[name()="svg"]//*[name()="path"]'):
+        path_d = path.get_attribute("d") or ""
+        for signature, platform in PLATFORM_SVG_SIGNATURES.items():
+            if path_d.startswith(signature):
+                if platform not in platforms:
+                    platforms.append(platform)
+                break
+    return platforms
+
+
 def scrape_ads_library(
     url: str,
     data_limit: int | None = 10,
@@ -382,29 +404,7 @@ def scrape_ads_library(
                         ad_data["started_running"] = line.replace("Started running on", "").strip()
 
                     elif line == "Platforms":
-                        platform_map = {
-                            "0px -955px": "Facebook",
-                            "0px -1007px": "Instagram",
-                            "-388px -732px": "Audience Network",
-                            "-387px -753px": "Messenger",
-                            "-387px -766px": "Threads"
-                        }
-
-                        ad_data["platforms"] = []
-
-                        icons = data_to_get.find_elements(
-                            "xpath",
-                            './/div[contains(@style,"mask-position")]'
-                        )
-
-                        for icon in icons:
-
-                            style = icon.get_attribute("style")
-
-                            for position, platform in platform_map.items():
-                                if f"mask-position: {position}" in style:
-                                    ad_data["platforms"].append(platform)
-                                    break
+                        ad_data["platforms"] = get_platforms(data_to_get)
 
                     elif "multiple versions" in line.lower():
                         ad_data["multiple_versions"] = True
